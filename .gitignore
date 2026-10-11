@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.log
+.venv/
+state/
+
+# Local credentials and tool configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.codex/
+.agents/
+
+# User-supplied datasets, model weights and generated evidence
+data/*.csv
+*.gguf
+*.safetensors
+*.pt
+*.pth
+runtime-validation.json
+character-validation.json
