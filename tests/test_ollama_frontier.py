@@ -20,7 +20,7 @@ class OllamaProviderTests(unittest.TestCase):
     def test_cloud_alias_cannot_generate_in_local_mode(self):
         client = Ollama()
         client.request = Mock(return_value={"remote_host":"https://ollama.com","remote_model":"glm-5.2"})
-        with self.assertRaisesRegex(ValueError,"Ollama 확장"):
+        with self.assertRaisesRegex(ValueError,"API"):
             client.chat("custom-alias",[{"role":"user","content":"private scene"}],0)
         self.assertEqual(client.request.call_count,1)
         self.assertEqual(client.request.call_args.args[0],"/api/show")
@@ -60,6 +60,33 @@ class AdvancedOllamaTests(test_gemini.TemporaryStore):
             return {}
         self.ollama.request = Mock(side_effect=request)
         return calls
+
+    def test_status_classifies_cloud_aliases_without_generating(self):
+        from app import Application
+        app = Application(self.root / "missing.csv", "http://127.0.0.1:11434", self.root / "sessions.json")
+        app.ollama.request = Mock(return_value={"models": [
+            {"name": "local-model"}, {"name": "remote-alias", "remote_model": "glm-5.2"}]})
+        status = app.status("ollama_frontier")
+        self.assertEqual(status["models"], ["local-model", "remote-alias"])
+        self.assertEqual(status["cloud_models"], ["remote-alias"])
+        app.ollama.request.assert_called_once_with("/api/tags", timeout=5)
+
+    def test_local_execution_blocks_cloud_alias_before_prompt_submission(self):
+        self.settings["ollama_model"] = "custom-alias"
+        calls = self.setup_model(cloud=True)
+        self.client.allow_cloud = False
+        with self.assertRaisesRegex(ValueError, "API"):
+            self.client.info("custom-alias")
+        self.assertFalse(any(route == "/api/chat" for route, _ in calls))
+
+    def test_local_execution_with_custom_context_remains_available(self):
+        self.settings["ollama_model"] = "glm-local:latest"
+        calls = self.setup_model(cloud=False)
+        self.client.allow_cloud = False
+        self.client.info(self.settings["ollama_model"])
+        self.client.chat(self.settings["ollama_model"], [{"role": "system", "content": "rules"}], SCHEMA, self.settings)
+        self.assertEqual(calls[-1][0], "/api/chat")
+        self.assertFalse(self.client.cloud)
 
     def test_cloud_omits_structured_format_and_local_memory_options(self):
         calls = self.setup_model()

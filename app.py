@@ -41,13 +41,18 @@ class Application:
         self.keys = KeyStore(state_path.parent / "secrets")
 
     def status(self, mode="local"):
-        models, connection_error = [], None
+        models, cloud_models, connection_error = [], [], None
         try:
             if mode != "frontier":
-                models = self.ollama.models(include_cloud=True) if mode == "ollama_frontier" else self.ollama.models()
+                if mode == "ollama_frontier":
+                    entries = self.ollama.model_entries()
+                    models = [entry["name"] for entry in entries]
+                    cloud_models = [entry["name"] for entry in entries if self.ollama.is_cloud(entry["name"], entry)]
+                else:
+                    models = self.ollama.models()
         except RuntimeError as exc:
             connection_error = str(exc)
-        return {"models": models, "connection_error": connection_error,
+        return {"models": models, "cloud_models": cloud_models, "connection_error": connection_error,
                 "catalog": self.catalog.info() if self.catalog else None,
                 "catalog_error": self.catalog_error, "active_job": self.active,
                 "gemini_key": self.keys.status()}
@@ -63,8 +68,8 @@ class Application:
         mode = session["generation"]["mode"]
         frontier = mode != "local"
         if frontier:
-            if payload.get("allow_cloud") is not True:
-                raise ValueError("확장 모드의 클라우드 전송 안내를 확인한 뒤 생성해 주세요.")
+            if mode == "frontier" and payload.get("allow_cloud") is not True:
+                raise ValueError("API 방식의 클라우드 전송 안내를 확인한 뒤 생성해 주세요.")
             if mode == "frontier":
                 Gemini.model_id(session["generation"]["model"])
             elif not session["generation"]["ollama_model"]:
@@ -93,7 +98,7 @@ class Application:
         def run():
             try:
                 if frontier:
-                    client = Gemini(self.keys) if mode == "frontier" else OllamaFrontier(self.ollama, payload.get("unload", True))
+                    client = Gemini(self.keys) if mode == "frontier" else OllamaFrontier(self.ollama, payload.get("unload", True), allow_cloud=payload.get("allow_cloud") is True)
                     result = FrontierCompiler(self.catalog, client).generate(prompt, session, progress)
                 else:
                     result = Compiler(self.catalog, self.ollama).generate(prompt, model, payload.get("unload", True), progress,

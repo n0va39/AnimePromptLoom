@@ -315,8 +315,11 @@ class Ollama:
             raise RuntimeError("Ollama에 연결하지 못했거나 응답 시간이 초과되었습니다. Ollama 실행과 모델 설치를 확인해 주세요.") from exc
 
     def models(self, include_cloud=False) -> list[str]:
-        return [m["name"] for m in self.request("/api/tags", timeout=5).get("models", [])
+        return [m["name"] for m in self.model_entries()
                 if include_cloud or not self.is_cloud(m["name"], m)]
+
+    def model_entries(self):
+        return self.request("/api/tags", timeout=5).get("models", [])
 
     def info(self, model):
         return self.request("/api/show", {"model": model}, timeout=20)
@@ -343,7 +346,7 @@ class Ollama:
     def chat(self, model: str, messages: list[dict], keep_alive: str | int, schema: dict | None = None, thinking: bool = False) -> dict:
         info = self.info(model)
         if self.is_cloud(model, info):
-            raise ValueError("클라우드 모델은 'Ollama 확장' 모드에서 전송 범위를 확인한 후 사용하세요.")
+            raise ValueError("클라우드 모델은 설정에서 API 방식을 선택하고 전송 범위를 확인한 후 사용하세요.")
         if info.get("capabilities") and "completion" not in info["capabilities"]:
             raise ValueError("선택 모델은 텍스트 대화를 지원하지 않습니다.")
         think = self.thinking_value(info, thinking)

@@ -9,8 +9,9 @@ class OllamaFrontier:
     provider = "ollama"
     label = "Ollama"
 
-    def __init__(self, ollama, unload=True):
+    def __init__(self, ollama, unload=True, allow_cloud=True):
         self.ollama, self.unload = ollama, unload
+        self.allow_cloud = allow_cloud
         self.usage = []
         self.cloud = False
         self.metadata = {}
@@ -24,6 +25,8 @@ class OllamaFrontier:
         if capabilities and "completion" not in capabilities:
             raise ValueError("선택 모델은 텍스트 대화를 지원하지 않습니다.")
         self.cloud = self.ollama.is_cloud(model, self.metadata)
+        if self.cloud and not self.allow_cloud:
+            raise ValueError("이 모델은 클라우드에서 실행됩니다. 설정에서 API 방식을 선택하세요.")
         limits = [v for k, v in self.metadata.get("model_info", {}).items() if k.endswith(".context_length") and type(v) is int and v > 0]
         return {"contextTokenLimit": min(limits)} if limits else {}
 
