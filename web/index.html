@@ -7,15 +7,21 @@
 <body>
   <main>
     <header><div><p class="eyebrow">DEVELOPMENT · OLLAMA + GEMINI · DANBOORU TAGS</p><h1>AnimePromptLoom<span>장면을 말하면, 프롬프트로.</span></h1></div><div><span class="local-badge">● 로컬 실행</span> <button id="shutdown" type="button">앱 종료</button></div></header>
-    <section class="panel context-panel">
-      <div class="section-heading"><h2>대화와 고정 컨텍스트</h2><span id="context-state" class="muted" role="status">설정을 불러오는 중…</span></div>
+    <section class="panel session-panel" aria-label="대화 관리">
+      <div class="section-heading"><h2>현재 대화</h2><span id="context-state" class="muted" role="status">설정을 불러오는 중…</span></div>
       <div class="session-row"><div><label for="session">저장된 대화</label><select id="session"></select></div><div><label for="session-name">대화 이름</label><input id="session-name" type="text" maxlength="100" placeholder="예: 숲속의 마법사"></div><button id="new-session" type="button">새 대화</button><button id="save-context" type="button">설정 저장</button></div>
-      <div class="character-heading"><h3>캐릭터별 설정</h3><button id="add-character" type="button">캐릭터 추가</button></div>
-      <p class="muted">구분용 이름은 요청에서 인물을 찾는 용도입니다. 출력에는 기본적으로 이름을 쓰지 않습니다. 학습된 이름·단부루 캐릭터 태그·LoRA 트리거를 쓸 때만 해당 인물의 ‘이름 그대로 사용’을 선택하세요.</p>
-      <div id="character-profiles"></div>
-      <div class="context-fields"><div><label for="background">배경 · 계속 유지할 설정</label><textarea id="background" maxlength="6000" rows="3" placeholder="예: 낮의 작은 도서관. 창가의 나무 책상."></textarea></div></div>
-      <p class="muted">고정 설정은 매번 포함합니다. 기본 모드는 최근 4회, 확장 모드는 아래에서 선택한 범위의 대화를 입력 예산 안에서 이어갑니다. 오래 유지할 변경은 위 설정이나 고정 기억에 반영하세요. 설정은 생성·대화 전환 시 자동 저장됩니다.</p>
     </section>
+    <div class="view-tabs" role="tablist" aria-label="작업 화면">
+      <button id="tab-generate" type="button" role="tab" aria-selected="true" aria-controls="view-generate" tabindex="0">프롬프트 생성</button>
+      <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="view-settings" tabindex="-1">설정</button>
+    </div>
+    <div class="app-status">
+        <p id="connection" class="status" role="status"></p>
+        <div id="progress" class="progress" role="status" hidden><span class="spinner"></span><span id="stage"></span><span id="elapsed"></span></div>
+        <p id="error" class="error" role="alert" hidden></p>
+    </div>
+    <div id="view-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+      <p class="view-intro">모델·API 키·컨텍스트와 캐릭터·배경을 설정하세요. 탭을 바꿔도 입력은 유지되며 생성할 때 자동 저장됩니다.</p>
     <section class="panel provider-panel">
       <div class="section-heading"><h2>모델과 대화 모드</h2><span class="muted">이 대화에 저장되는 설정</span></div>
       <label for="mode">실행 방식</label>
@@ -50,7 +56,25 @@
         </details>
         <p class="muted">반복 입력은 Gemini 자동 캐싱의 대상이 될 수 있습니다. 실제 적중 토큰은 결과에 표시합니다. 적중·할인은 보장되지 않으며 수동 캐시 생성·보관은 이번 버전에 포함하지 않습니다.</p>
       </div>
+              <div id="local-settings"><div class="model-row"><div><label for="model">Ollama 모델</label><select id="model"><option value="">연결 확인 중…</option></select></div><button id="refresh" class="secondary" type="button">연결 확인</button></div>
+          <label class="checkbox"><input id="unload" type="checkbox" checked> 생성 후 로컬 모델 메모리 해제 <span>VRAM 반환</span></label>
+          <details id="local-options"><summary>생성 옵션</summary><label class="checkbox"><input id="thinking" type="checkbox"> 추론 사용 요청 <span>응답이 느려질 수 있음</span></label><label class="checkbox"><input id="refine" type="checkbox"> CSV 설명으로 추가 교정 <span>LLM 1회 추가 호출</span></label><p>기본은 LLM 1회 호출입니다. 추가 교정을 꺼도 최종 태그의 CSV 대조는 수행합니다. 메모리 해제를 끄면 모델을 최대 5분 유지해 연속 호출 시 다시 로딩하지 않습니다.</p></details>
+          </div>
+        <details id="setup"><summary>처음 실행하거나 연결이 안 될 때</summary><p>Ollama를 실행한 뒤 PowerShell에서 모델을 설치하세요. 최초 다운로드만 인터넷이 필요합니다.</p><code>ollama pull qwen3:8b</code><p>서버가 실행되지 않았다면 별도 터미널에서 <code>ollama serve</code>를 실행하세요. 설치 후 ‘연결 확인’을 누르세요.</p><p>태그 CSV는 저장소에 포함하지 않습니다. data/SOURCE.md의 형식에 맞는 파일을 준비하고 앱을 다시 실행하세요.</p></details>
     </section>
+    <section class="panel context-panel">
+      <div class="section-heading"><h2>캐릭터와 배경</h2><span class="muted">이 대화에 유지할 설정</span></div>
+      <div class="character-heading"><h3>캐릭터별 설정</h3><button id="add-character" type="button">캐릭터 추가</button></div>
+      <p class="muted">구분용 이름은 요청에서 인물을 찾는 용도입니다. 출력에는 기본적으로 이름을 쓰지 않습니다. 학습된 이름·단부루 캐릭터 태그·LoRA 트리거를 쓸 때만 해당 인물의 ‘이름 그대로 사용’을 선택하세요.</p>
+      <div id="character-profiles"></div>
+      <div class="context-fields"><div><label for="background">배경 · 계속 유지할 설정</label><textarea id="background" maxlength="6000" rows="3" placeholder="예: 낮의 작은 도서관. 창가의 나무 책상."></textarea></div></div>
+      <p class="muted">고정 설정은 매번 포함합니다. 기본 모드는 최근 4회, 확장 모드는 모델 설정에서 선택한 범위의 대화를 입력 예산 안에서 이어갑니다. 오래 유지할 변경은 위 설정이나 고정 기억에 반영하세요. 설정은 생성·대화 전환 시 자동 저장됩니다.</p>
+    </section>
+      <div class="settings-end"><button type="button" data-open-tab="generate">프롬프트 생성으로 돌아가기 →</button></div>
+    </div>
+    <div id="view-generate" role="tabpanel" aria-labelledby="tab-generate" tabindex="0">
+      <div class="generation-summary"><p id="generation-summary" class="muted">모델 설정을 불러오는 중…</p><button type="button" data-open-tab="settings">설정 변경</button></div>
+      <p id="generation-notice" class="cloud-notice" hidden></p>
     <div class="workspace">
       <section class="panel input-panel">
         <div class="section-heading"><h2><span>01</span> 원하는 장면</h2><span class="muted">한국어 → English + Tags</span></div>
@@ -59,18 +83,11 @@
           <textarea id="prompt" maxlength="6000" rows="9" placeholder="예: 한 여성이 책을 읽다가 고개를 들어 옆을 바라본다. 외형과 의상, 배경은 지정하지 않음." required></textarea>
           <div class="input-footer"><span>명시한 조건은 유지하고, 불필요한 장면 요소는 줄입니다.</span><span id="char-count">0 / 6,000</span></div>
           <div class="examples"><button type="button" data-example="한 여성이 책을 읽다가 고개를 들어 옆을 바라본다. 외형과 의상, 배경은 지정하지 않음.">책을 읽는 인물</button><button type="button" data-example="빨간 코트를 입은 여성과 파란 재킷을 입은 남성이 서로를 바라보며 대화한다. 배경과 카메라 구도는 지정하지 않음.">두 인물의 대화</button><button type="button" data-example="비가 내리는 텅 빈 골목. 젖은 바닥에 간판 불빛이 반사된다. 인물은 없음.">인물 없는 장면</button></div>
-          <div id="local-settings"><div class="model-row"><div><label for="model">Ollama 모델</label><select id="model"><option value="">연결 확인 중…</option></select></div><button id="refresh" class="secondary" type="button">연결 확인</button></div>
-          <label class="checkbox"><input id="unload" type="checkbox" checked> 생성 후 로컬 모델 메모리 해제 <span>VRAM 반환</span></label>
-          <details id="local-options"><summary>생성 옵션</summary><label class="checkbox"><input id="thinking" type="checkbox"> 추론 사용 요청 <span>응답이 느려질 수 있음</span></label><label class="checkbox"><input id="refine" type="checkbox"> CSV 설명으로 추가 교정 <span>LLM 1회 추가 호출</span></label><p>기본은 LLM 1회 호출입니다. 추가 교정을 꺼도 최종 태그의 CSV 대조는 수행합니다. 메모리 해제를 끄면 모델을 최대 5분 유지해 연속 호출 시 다시 로딩하지 않습니다.</p></details>
-          </div><button class="primary" id="generate" type="submit" disabled>프롬프트 만들기 <span>↗</span></button>
+          <button class="primary" id="generate" type="submit" disabled>프롬프트 만들기 <span>↗</span></button>
         </form>
-        <p id="connection" class="status" role="status"></p>
-        <details id="setup"><summary>처음 실행하거나 연결이 안 될 때</summary><p>Ollama를 실행한 뒤 PowerShell에서 모델을 설치하세요. 최초 다운로드만 인터넷이 필요합니다.</p><code>ollama pull qwen3:8b</code><p>서버가 실행되지 않았다면 별도 터미널에서 <code>ollama serve</code>를 실행하세요. 설치 후 ‘연결 확인’을 누르세요.</p><p>태그 CSV는 저장소에 포함하지 않습니다. data/SOURCE.md의 형식에 맞는 파일을 준비하고 앱을 다시 실행하세요.</p></details>
       </section>
       <section class="panel output-panel">
         <div class="section-heading"><h2><span>02</span> 완성된 프롬프트</h2><span id="result-meta" class="muted">출력을 기다리는 중</span></div>
-        <div id="progress" class="progress" role="status" hidden><span class="spinner"></span><span id="stage"></span><span id="elapsed"></span></div>
-        <p id="error" class="error" role="alert" hidden></p>
         <div id="empty" class="empty"><span class="empty-icon">✦</span><h3>상상한 장면을 적어 주세요</h3><p>고정 설정과 최근 대화를 이어받아<br>영문 묘사와 태그를 작성합니다.</p><div class="steps">컨텍스트 <b>→</b> 모델 응답 <b>→</b> CSV 대조</div></div>
         <pre id="output" tabindex="0" hidden></pre>
         <div class="actions"><button id="copy-positive" disabled>생성용 복사 <small>번역 제외</small></button><button id="copy-all" disabled>전체 코드 블록 복사</button><button id="download" disabled>TXT 저장</button></div>
@@ -84,6 +101,7 @@
       <details class="source-details"><summary>참조 CSV 정보</summary><p id="catalog-source"></p><p>사용자가 준비한 로컬 CSV를 읽습니다. EasyUseAnima의 한국어 태그 CSV 형식과 호환되며 데이터는 저장소에 포함하지 않습니다. CSV 미확인은 Danbooru에 존재하지 않는다는 뜻이 아닙니다.</p></details>
     </section>
     <section class="panel history-panel"><div class="section-heading"><h2>이 대화의 기록</h2><span id="history-count" class="muted"></span></div><div id="history"></div></section>
+    </div>
     <footer>ComfyUI와 독립 실행 · 고정 설정과 대화는 이 PC의 state/sessions.json에 저장됩니다.<br>Copyright © 2026 n0va39 · <a href="https://github.com/n0va39/AnimePromptLoom/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only</a> 조건에 따라 수정·재배포할 수 있으며 보증은 제공하지 않습니다.</footer>
   </main>
 </body>

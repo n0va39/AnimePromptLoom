@@ -4,6 +4,28 @@ let sessionId = null;
 let characterProfiles = [];
 let lastStatus = null, refreshVersion = 0;
 let selectedOllama = '';
+function showTab(name, focus = false) {
+  for (const view of ['generate', 'settings']) {
+    const active = view === name;
+    $(`view-${view}`).hidden = !active;
+    $(`tab-${view}`).setAttribute('aria-selected', String(active));
+    $(`tab-${view}`).tabIndex = active ? 0 : -1;
+  }
+  if (focus) $(`tab-${name}`).focus();
+}
+const tabs = ['generate', 'settings'];
+tabs.forEach((name, index) => {
+  $(`tab-${name}`).addEventListener('click', () => showTab(name));
+  $(`tab-${name}`).addEventListener('keydown', event => {
+    let next;
+    if (event.key === 'ArrowRight') next = tabs[(index + 1) % tabs.length];
+    else if (event.key === 'ArrowLeft') next = tabs[(index + tabs.length - 1) % tabs.length];
+    else if (event.key === 'Home') next = tabs[0];
+    else if (event.key === 'End') next = tabs[tabs.length - 1];
+    if (next) { event.preventDefault(); showTab(next, true); }
+  });
+});
+document.querySelectorAll('[data-open-tab]').forEach(button => button.addEventListener('click', () => showTab(button.dataset.openTab, true)));
 const generationFields = {model:'gemini-model', history_limit:'history-limit', input_budget:'input-budget', output_tokens:'output-tokens', temperature:'temperature', thinking:'frontier-thinking', include_responses:'include-responses', elaboration:'elaboration', memory:'memory', instruction:'instruction', mode:'mode'};
 const generationDefaults = {mode:'local',model:'',history_limit:12,input_budget:32000,output_tokens:8192,temperature:0.7,thinking:'default',include_responses:true,elaboration:'restrained',memory:'',instruction:''};
 function generationSettings() {
@@ -25,6 +47,10 @@ function updateProvider() {
   $('cloud-notice').textContent = cloud ? 'Gemini로 생성하면 요청, 캐릭터·배경, 고정 기억, 추가 지시와 선택한 최근 대화가 Google로 전송됩니다. CSV 전체는 전송하지 않습니다. API 이용 요금과 데이터 이용 조건은 사용자의 Google 프로젝트에 따릅니다.' : 'Ollama 확장 모드는 등록된 로컬·클라우드 모델을 모두 표시합니다. :cloud 또는 원격 모델을 선택하면 요청과 선택한 컨텍스트가 Ollama Cloud로 전송됩니다. CSV 전체는 전송하지 않습니다. 클라우드 로그인·이용 한도는 Ollama에서 관리합니다.';
   connected = !!lastStatus?.catalog && (cloud ? !!lastStatus?.gemini_key?.configured && !!$('gemini-model').value.trim() : !lastStatus.connection_error && lastStatus.models.length > 0);
   $('generate').disabled = busy || !connected;
+  const model = cloud ? $('gemini-model').value.trim() : $('model').value;
+  $('generation-summary').textContent = `${$('mode').selectedOptions[0].textContent} · ${model || '설정 탭에서 모델을 선택하세요'}`;
+  $('generation-notice').hidden = !(cloud || extended);
+  $('generation-notice').textContent = $('cloud-notice').textContent;
 }
 function showKeyStatus(info) {
   $('key-status').textContent = !info.configured ? '저장된 키 없음' : info.storage === 'encrypted' ? 'Windows 계정으로 암호화 저장됨 · 연결은 별도 확인' : '앱 종료까지 메모리에 보관 중 · 연결은 별도 확인';
