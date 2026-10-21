@@ -185,11 +185,20 @@ def tag_schema(refs: list[dict]) -> dict:
     return {"type": "array", "items": {"type": "string", "enum": [ref["name"] for ref in refs]}, "maxItems": 32}
 
 
-def finalize(doc: dict, catalog: Catalog, request: str, profiles: list | None = None) -> dict:
+def finalize(doc: dict, catalog: Catalog, request: str, profiles: list | None = None, reference_contract=True) -> dict:
     doc = copy.deepcopy(doc)
     profiles = profiles or []
     check_document(doc)
-    render_references(doc, profiles)
+    if reference_contract:
+        render_references(doc, profiles)
+    elif profiles:
+        known, seen = {p["id"] for p in profiles}, set()
+        for character in doc["characters"]:
+            identity = character.get("profile_id")
+            if identity is None or (identity and (identity not in known or identity in seen)):
+                raise ValueError("모델의 캐릭터 연결이 올바르지 않습니다.")
+            if identity:
+                seen.add(identity)
     profile_map = {p["id"]: p for p in profiles}
     enabled_names = {p["name"] for p in profiles if p["use_name"]}
     private_names = {value for p in profiles for value in (p["label"], p["name"] if not p["use_name"] else "") if value and value not in enabled_names}
@@ -299,22 +308,53 @@ class Ollama:
             with self.opener.open(req, timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Ollama 오류 ({exc.code}): {body[:500]}") from exc
+            code = exc.code
+            exc.close()
+            raise RuntimeError(f"Ollama 오류 ({code}). 모델 설치·로그인·지원 옵션과 사용량 한도를 확인하세요.") from None
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError("Ollama에 연결하지 못했거나 응답 시간이 초과되었습니다. Ollama 실행과 모델 설치를 확인해 주세요.") from exc
 
-    def models(self) -> list[str]:
+    def models(self, include_cloud=False) -> list[str]:
         return [m["name"] for m in self.request("/api/tags", timeout=5).get("models", [])
-                if "qwen" in m["name"].lower() and "cloud" not in m["name"].lower()
-                and not m.get("remote_host") and not m.get("remote_model")]
+                if include_cloud or not self.is_cloud(m["name"], m)]
+
+    def info(self, model):
+        return self.request("/api/show", {"model": model}, timeout=20)
+
+    @staticmethod
+    def is_cloud(model, info):
+        return "cloud" in model.lower() or bool(info.get("remote_host") or info.get("remote_model"))
+
+    @staticmethod
+    def thinking_value(info, requested):
+        if requested in (None, "default"):
+            return None
+        values = info.get("thinking", {}).get("values", [])
+        if any(type(value) is type(requested) and value == requested for value in values):
+            return requested
+        # Legacy on/off supports no named intensity levels: do not invent a mapping.
+        if type(requested) is bool:
+            if not values and "thinking" in info.get("capabilities", []):
+                return requested
+            if requested is False:
+                return None
+        raise ValueError("선택 모델이 이 추론 설정을 지원한다고 확인되지 않았습니다. '모델 기본'을 선택하세요.")
 
     def chat(self, model: str, messages: list[dict], keep_alive: str | int, schema: dict | None = None, thinking: bool = False) -> dict:
-        response = self.request("/api/chat", {
-            "model": model, "messages": messages, "stream": False, "think": thinking,
+        info = self.info(model)
+        if self.is_cloud(model, info):
+            raise ValueError("클라우드 모델은 'Ollama 확장' 모드에서 전송 범위를 확인한 후 사용하세요.")
+        if info.get("capabilities") and "completion" not in info["capabilities"]:
+            raise ValueError("선택 모델은 텍스트 대화를 지원하지 않습니다.")
+        think = self.thinking_value(info, thinking)
+        payload = {
+            "model": model, "messages": messages, "stream": False,
             "format": schema or SCHEMA, "keep_alive": keep_alive,
             "options": {"temperature": 0.25, "num_ctx": 16384, "num_predict": 6000 if thinking else 3000},
-        })
+        }
+        if think is not None:
+            payload["think"] = think
+        response = self.request("/api/chat", payload)
         if response.get("done_reason") == "length":
             raise ValueError("모델의 출력 길이 한도에 도달했습니다. 추론 모드를 끄거나 요청을 줄여 다시 생성해 주세요.")
         try:
@@ -338,7 +378,7 @@ class Compiler:
         if not request.strip() or len(request) > 6000:
             raise ValueError("장면 요청을 1~6,000자로 입력해 주세요.")
         if model not in self.ollama.models():
-            raise ValueError(f"로컬 Qwen 모델이 없습니다. 먼저 실행해 주세요: ollama pull {model}")
+            raise ValueError("로컬 Ollama 모델이 없습니다. Ollama에서 모델을 설치한 뒤 연결을 확인하세요.")
         report = progress or (lambda stage: None)
         result = None
         unload_error = None
@@ -355,7 +395,7 @@ class Compiler:
             result.update(model=model, context=context_info, thinking=thinking, refined=refine)
         finally:
             if unload:
-                report("Qwen 모델을 메모리에서 해제하고 있습니다.")
+                report("Ollama 모델을 메모리에서 해제하고 있습니다.")
                 try:
                     self.ollama.unload(model)
                 except RuntimeError as exc:

@@ -16,6 +16,10 @@ from urllib.parse import parse_qs, urlsplit
 
 from compiler import Catalog, Compiler, DEFAULT_CSV, Ollama, ROOT
 from sessions import Sessions
+from credentials import KeyStore
+from gemini import Gemini
+from frontier import FrontierCompiler
+from ollama_frontier import OllamaFrontier
 
 
 class Application:
@@ -34,27 +38,41 @@ class Application:
         self.active = None
         self.stopping = False
         self.sessions = Sessions(state_path)
+        self.keys = KeyStore(state_path.parent / "secrets")
 
-    def status(self):
+    def status(self, mode="local"):
         models, connection_error = [], None
         try:
-            models = self.ollama.models()
+            if mode != "frontier":
+                models = self.ollama.models(include_cloud=True) if mode == "ollama_frontier" else self.ollama.models()
         except RuntimeError as exc:
             connection_error = str(exc)
         return {"models": models, "connection_error": connection_error,
                 "catalog": self.catalog.info() if self.catalog else None,
-                "catalog_error": self.catalog_error, "active_job": self.active}
+                "catalog_error": self.catalog_error, "active_job": self.active,
+                "gemini_key": self.keys.status()}
 
     def create_job(self, payload):
         prompt, model = payload.get("prompt"), payload.get("model")
         if not isinstance(prompt, str) or not 1 <= len(prompt.strip()) <= 6000:
             raise ValueError("장면 요청을 1~6,000자로 입력해 주세요.")
-        if not isinstance(model, str) or not model or len(model) > 150:
-            raise ValueError("설치된 Qwen 모델을 선택해 주세요.")
         for key, default in (("unload", True), ("thinking", False), ("refine", False)):
             if type(payload.get(key, default)) is not bool:
                 raise ValueError(f"{key} 설정이 올바르지 않습니다.")
         session = self.sessions.get(payload.get("session_id"))
+        mode = session["generation"]["mode"]
+        frontier = mode != "local"
+        if frontier:
+            if payload.get("allow_cloud") is not True:
+                raise ValueError("확장 모드의 클라우드 전송 안내를 확인한 뒤 생성해 주세요.")
+            if mode == "frontier":
+                Gemini.model_id(session["generation"]["model"])
+            elif not session["generation"]["ollama_model"]:
+                raise ValueError("Ollama 모델을 선택하세요.")
+            if mode == "frontier" and not self.keys.status()["configured"]:
+                raise ValueError("앱의 Gemini 설정에서 API 키를 저장해 주세요.")
+        elif not isinstance(model, str) or not model or len(model) > 150:
+            raise ValueError("설치된 Ollama 모델을 선택해 주세요.")
         if self.catalog is None:
             raise ValueError(f"CSV를 읽을 수 없습니다: {self.catalog_error}")
         with self.lock:
@@ -74,8 +92,12 @@ class Application:
 
         def run():
             try:
-                result = Compiler(self.catalog, self.ollama).generate(prompt, model, payload.get("unload", True), progress,
-                            session=session, thinking=payload.get("thinking", False), refine=payload.get("refine", False))
+                if frontier:
+                    client = Gemini(self.keys) if mode == "frontier" else OllamaFrontier(self.ollama, payload.get("unload", True))
+                    result = FrontierCompiler(self.catalog, client).generate(prompt, session, progress)
+                else:
+                    result = Compiler(self.catalog, self.ollama).generate(prompt, model, payload.get("unload", True), progress,
+                                session=session, thinking=payload.get("thinking", False), refine=payload.get("refine", False))
                 try:
                     self.sessions.append(session["id"], prompt, result, session)
                 except OSError as exc:
@@ -83,7 +105,8 @@ class Application:
                 result["session_id"] = session["id"]
                 final = {"status": "done", "result": result}
             except Exception as exc:
-                final = {"status": "error", "error": str(exc)}
+                message = str(exc) if not frontier or isinstance(exc, (ValueError, RuntimeError)) else "모델 응답 처리에 실패했습니다. 모델과 설정을 확인하세요."
+                final = {"status": "error", "error": message}
             with self.lock:
                 self.jobs[job_id] = final
                 self.active = None
@@ -131,7 +154,7 @@ def handler_for(application):
                 name, content_type = static[url.path]
                 return self.send_data(200, (ROOT / "web" / name).read_bytes(), content_type)
             if url.path == "/api/status":
-                return self.send_data(200, application.status())
+                return self.send_data(200, application.status(parse_qs(url.query).get("mode", ["local"])[0]))
             if url.path == "/api/sessions":
                 return self.send_data(200, application.sessions.list())
             if url.path.startswith("/api/sessions/"):
@@ -163,15 +186,30 @@ def handler_for(application):
                 self.send_data(200, {"stopped": True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
                 return
-            if self.path not in {"/api/generate", "/api/sessions"}:
+            if self.path not in {"/api/generate", "/api/sessions", "/api/credentials/gemini", "/api/gemini/models"}:
                 return self.send_data(404, {"error": "경로를 찾을 수 없습니다."})
+            if self.path in {"/api/credentials/gemini", "/api/gemini/models"} and self.headers.get("X-AnimePromptLoom") != "1":
+                return self.send_data(403, {"error": "앱의 설정 화면에서 요청해 주세요."})
             try:
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 256000:
+                if not 0 < size <= 512000:
                     raise ValueError("요청 크기가 올바르지 않습니다.")
                 payload = json.loads(self.rfile.read(size))
                 if not isinstance(payload, dict):
                     raise ValueError("JSON 객체가 필요합니다.")
+                if self.path == "/api/credentials/gemini":
+                    with application.lock:
+                        if application.active or application.stopping:
+                            raise BlockingIOError("생성 완료 후 API 키를 변경해 주세요.")
+                        if payload.get("action") == "delete":
+                            application.keys.delete()
+                        elif payload.get("action") == "save":
+                            application.keys.save(payload.get("api_key"), payload.get("persistent", True))
+                        else:
+                            raise ValueError("키 저장 또는 삭제를 선택하세요.")
+                    return self.send_data(200, application.keys.status())
+                if self.path == "/api/gemini/models":
+                    return self.send_data(200, {"models": Gemini(application.keys).models()})
                 if self.path == "/api/sessions":
                     with application.lock:
                         if application.active or application.stopping:
@@ -183,6 +221,10 @@ def handler_for(application):
                 return self.send_data(409, {"error": str(exc)})
             except (ValueError, UnicodeDecodeError) as exc:
                 return self.send_data(400, {"error": str(exc)})
+            except RuntimeError as exc:
+                return self.send_data(502, {"error": str(exc)})
+            except OSError:
+                return self.send_data(500, {"error": "설정을 저장하지 못했습니다. 파일 권한과 저장 공간을 확인하세요."})
 
     return Handler
 

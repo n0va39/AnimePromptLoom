@@ -2,8 +2,37 @@ const $ = id => document.getElementById(id);
 let result = null, busy = false, connected = false, started = 0, timer = null;
 let sessionId = null;
 let characterProfiles = [];
+let lastStatus = null, refreshVersion = 0;
+let selectedOllama = '';
+const generationFields = {model:'gemini-model', history_limit:'history-limit', input_budget:'input-budget', output_tokens:'output-tokens', temperature:'temperature', thinking:'frontier-thinking', include_responses:'include-responses', elaboration:'elaboration', memory:'memory', instruction:'instruction', mode:'mode'};
+const generationDefaults = {mode:'local',model:'',history_limit:12,input_budget:32000,output_tokens:8192,temperature:0.7,thinking:'default',include_responses:true,elaboration:'restrained',memory:'',instruction:''};
+function generationSettings() {
+  return {...Object.fromEntries(Object.entries(generationFields).map(([key,id]) => [key, typeof generationDefaults[key] === 'number' ? Number($(id).value) : typeof generationDefaults[key] === 'boolean' ? $(id).checked : $(id).value])), ollama_model:$('model').value || selectedOllama};
+}
+function loadGeneration(settings = {}) {
+  selectedOllama = settings.ollama_model || '';
+  for (const [key,id] of Object.entries(generationFields)) {
+    if (typeof generationDefaults[key] === 'boolean') $(id).checked = settings[key] ?? generationDefaults[key];
+    else $(id).value = settings[key] ?? generationDefaults[key];
+  }
+  updateProvider();
+}
+function updateProvider() {
+  const cloud = $('mode').value === 'frontier';
+  const extended = $('mode').value === 'ollama_frontier';
+  $('frontier-settings').hidden = !(cloud || extended); $('local-settings').hidden = cloud; $('setup').hidden = cloud; $('local-options').hidden = extended;
+  $('gemini-controls').hidden = !cloud;
+  $('cloud-notice').textContent = cloud ? 'Gemini로 생성하면 요청, 캐릭터·배경, 고정 기억, 추가 지시와 선택한 최근 대화가 Google로 전송됩니다. CSV 전체는 전송하지 않습니다. API 이용 요금과 데이터 이용 조건은 사용자의 Google 프로젝트에 따릅니다.' : 'Ollama 확장 모드는 등록된 로컬·클라우드 모델을 모두 표시합니다. :cloud 또는 원격 모델을 선택하면 요청과 선택한 컨텍스트가 Ollama Cloud로 전송됩니다. CSV 전체는 전송하지 않습니다. 클라우드 로그인·이용 한도는 Ollama에서 관리합니다.';
+  connected = !!lastStatus?.catalog && (cloud ? !!lastStatus?.gemini_key?.configured && !!$('gemini-model').value.trim() : !lastStatus.connection_error && lastStatus.models.length > 0);
+  $('generate').disabled = busy || !connected;
+}
+function showKeyStatus(info) {
+  $('key-status').textContent = !info.configured ? '저장된 키 없음' : info.storage === 'encrypted' ? 'Windows 계정으로 암호화 저장됨 · 연결은 별도 확인' : '앱 종료까지 메모리에 보관 중 · 연결은 별도 확인';
+  $('persist-key').disabled = busy || !info.persistent_supported;
+  if (!info.persistent_supported) $('persist-key').checked = false;
+}
 async function api(path, options) {
-  const response = await fetch(path, options);
+  const response = await fetch(path, options ? {...options, headers:{...options.headers, 'X-AnimePromptLoom':'1'}} : undefined);
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
@@ -15,20 +44,28 @@ function setBusy(value) {
   $('shutdown').disabled = value;
   for (const id of ['session', 'session-name', 'background', 'new-session', 'save-context', 'thinking', 'refine', 'add-character']) $(id).disabled = value;
   document.querySelectorAll('#character-profiles input, #character-profiles textarea, #character-profiles select, #character-profiles button').forEach(node => { node.disabled = value; });
+  document.querySelectorAll('.provider-panel input, .provider-panel textarea, .provider-panel select, .provider-panel button').forEach(node => { node.disabled = value; });
+  if (lastStatus?.gemini_key) showKeyStatus(lastStatus.gemini_key);
   $('progress').hidden = !value;
   for (const id of ['copy-positive', 'copy-all', 'download']) $(id).disabled = value || !result;
 }
 async function refresh() {
+  const version = ++refreshVersion, mode = $('mode').value, cloud = mode === 'frontier';
   $('refresh').disabled = true;
   try {
-    const status = await api('/api/status');
-    const previous = $('model').value || localStorage.getItem('anima-model') || 'qwen3:8b';
+    const status = await api(`/api/status?mode=${mode}`);
+    if (version !== refreshVersion) return;
+    lastStatus = status; showKeyStatus(status.gemini_key);
+    const previous = selectedOllama || $('model').value || localStorage.getItem('anima-model') || 'qwen3:8b';
+    if (!cloud) {
     $('model').replaceChildren();
     for (const model of status.models) $('model').add(new Option(model, model));
     if (status.models.includes(previous)) $('model').value = previous;
-    if (!status.models.length) $('model').add(new Option('Qwen 모델을 설치해 주세요', ''));
-    connected = !status.connection_error && !!status.catalog && status.models.length > 0;
-    $('connection').textContent = status.catalog_error ? `CSV 로딩 실패: ${status.catalog_error}` : status.connection_error || (status.models.length ? 'Ollama 연결됨 · 모든 생성 요청은 이 PC에서 처리됩니다.' : 'Ollama 연결됨 · 아직 설치된 Qwen 모델이 없습니다.');
+    if (!status.models.length) $('model').add(new Option('Ollama 모델을 등록해 주세요', ''));
+    selectedOllama = $('model').value;
+    }
+    updateProvider();
+    $('connection').textContent = status.catalog_error ? `CSV 로딩 실패: ${status.catalog_error}` : cloud ? 'Gemini 모드 · 생성 시 선택한 컨텍스트를 Google로 전송합니다.' : status.connection_error || (status.models.length ? mode === 'ollama_frontier' ? 'Ollama 연결됨 · 클라우드 모델 선택 시 외부로 컨텍스트가 전송됩니다.' : 'Ollama 연결됨 · 로컬 모델만 사용합니다.' : 'Ollama 연결됨 · 아직 등록된 모델이 없습니다.');
     $('setup').open = !connected;
     if (status.catalog) {
       $('catalog-count').textContent = `${status.catalog.count.toLocaleString()}개 태그 · 한국어 설명 ${status.catalog.korean_descriptions.toLocaleString()}개`;
@@ -56,7 +93,11 @@ function render(data) {
   for (const tag of data.custom_names || []) { const p = document.createElement('p'); p.textContent = `${tag.section} / ${tag.name} — ${tag.reason}`; $('excluded').append(p); }
   if (data.draft_unverified.length) { const p = document.createElement('p'); p.textContent = `초안에서 미확인되어 교정에 전달한 후보: ${data.draft_unverified.join(', ')}`; $('excluded').append(p); }
   if (data.unload_error) error(`생성은 완료됐지만 메모리 해제를 확인하지 못했습니다: ${data.unload_error}`);
-  else $('copy-feedback').textContent = data.unload_requested ? 'Qwen 메모리 해제 완료' : '연속 생성을 위해 모델을 최대 5분간 유지합니다.';
+  else if (data.usage) {
+    const usage = data.usage?.[0] || {};
+    const count = key => Number.isInteger(usage[key]) ? usage[key].toLocaleString() : '미보고';
+    $('copy-feedback').textContent = `${data.provider === 'gemini' ? 'Gemini' : data.remote ? 'Ollama Cloud' : 'Ollama 로컬'} · 입력 ${count('promptTokenCount')} · 캐시 적중 ${count('cachedContentTokenCount')} · 출력 ${count('candidatesTokenCount')} · 추론 ${count('thoughtsTokenCount')} 토큰${data.unload_requested ? ' · 모델 해제 완료' : ''}`;
+  } else $('copy-feedback').textContent = data.unload_requested ? 'Ollama 모델 메모리 해제 완료' : '연속 생성을 위해 모델을 최대 5분간 유지합니다.';
   if (data.save_error) error(data.save_error);
   if (data.context) $('context-state').textContent = `고정 설정 ${data.context.pinned_context ? '포함' : '없음'} · 최근 ${data.context.included_turns}회 포함 · 이전 ${data.context.omitted_turns}회 생략 · 입력 약 ${data.context.estimated_input_tokens.toLocaleString()} 토큰`;
 }
@@ -79,7 +120,7 @@ $('generate-form').addEventListener('submit', async event => {
   $('copy-feedback').textContent = ''; localStorage.setItem('anima-model', $('model').value);
   try {
     await saveSession();
-    const data = await api('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: $('prompt').value, model: $('model').value, unload: $('unload').checked, session_id:sessionId, thinking:$('thinking').checked, refine:$('refine').checked }) });
+    const data = await api('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: $('prompt').value, model: $('model').value, unload: $('unload').checked, session_id:sessionId, thinking:$('thinking').checked, refine:$('refine').checked, allow_cloud:$('mode').value !== 'local' }) });
     await poll(data.job_id);
   } catch (exc) { error(exc.message); setBusy(false); }
 });
@@ -122,7 +163,7 @@ async function listSessions() {
   return rows;
 }
 async function saveSession() {
-  const data = await api('/api/sessions', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:sessionId, name:$('session-name').value, character_profiles:characterProfiles, background:$('background').value})});
+  const data = await api('/api/sessions', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:sessionId, name:$('session-name').value, character_profiles:characterProfiles, background:$('background').value, generation:generationSettings()})});
   sessionId = data.id; localStorage.setItem('anima-session', sessionId);
   $('context-state').textContent = '고정 설정 저장됨';
   await listSessions(); return data;
@@ -147,11 +188,13 @@ async function loadHistory() {
 async function loadSession(id) {
   const session = await api(`/api/sessions/${id}`); sessionId=id;
   $('session').value=id; $('session-name').value=session.name; characterProfiles=session.character_profiles || []; renderCharacters(); $('background').value=session.background;
+  loadGeneration(session.generation);
   localStorage.setItem('anima-session',id); $('context-state').textContent='저장된 설정 불러옴';
   result=null; $('output').hidden=true; $('empty').hidden=false; $('result-meta').textContent='출력을 기다리는 중';
   $('audit').replaceChildren(); $('excluded').replaceChildren(); $('copy-feedback').textContent=''; error('');
   $('audit-summary').textContent='생성하면 태그의 한국어 설명과 제외 사유가 표시됩니다.';
   renderHistory(session); setBusy(false);
+  await refresh();
 }
 $('save-context').addEventListener('click', () => saveSession().catch(exc=>error(exc.message)));
 $('session').addEventListener('change', async () => {
@@ -162,7 +205,7 @@ $('session').addEventListener('change', async () => {
 $('new-session').addEventListener('click', async () => {
   try {
     if(sessionId) await saveSession();
-    sessionId=null; $('session-name').value='새 대화'; characterProfiles=[]; renderCharacters(); $('background').value='';
+    sessionId=null; $('session-name').value='새 대화'; characterProfiles=[]; renderCharacters(); $('background').value=''; loadGeneration();
     const created=await saveSession(); await loadSession(created.id); $('prompt').value=''; $('prompt').dispatchEvent(new Event('input'));
   } catch(exc){error(exc.message);}
 });
@@ -172,10 +215,36 @@ async function initialize() {
     const previous=localStorage.getItem('anima-session');
     if (sessions.length) await loadSession(sessions.some(s=>s.id===previous)?previous:sessions[0].id);
     else { $('session-name').value='첫 대화'; const created=await saveSession(); await loadSession(created.id); }
-    await refresh();
   } catch(exc){error(exc.message); $('generate').disabled=true;}
 }
 initialize();
+
+$('mode').addEventListener('change', () => { updateProvider(); refresh(); });
+$('gemini-model').addEventListener('input', updateProvider);
+$('model').addEventListener('change', () => { selectedOllama = $('model').value; updateProvider(); });
+async function updateKey(action) {
+  error('');
+  const payload = action === 'save' ? {action,api_key:$('api-key').value,persistent:$('persist-key').checked} : {action};
+  $('api-key').value = '';
+  setBusy(true); $('stage').textContent = 'API 키 저장소를 변경하고 있습니다.';
+  try {
+    const info = await api('/api/credentials/gemini', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if (lastStatus) lastStatus.gemini_key = info;
+    showKeyStatus(info); updateProvider();
+  } catch (exc) { error(exc.message); }
+  finally { payload.api_key = ''; setBusy(false); }
+}
+$('save-key').addEventListener('click', () => updateKey('save'));
+$('delete-key').addEventListener('click', () => updateKey('delete'));
+$('list-models').addEventListener('click', async () => {
+  error(''); setBusy(true); $('stage').textContent = 'Gemini 모델 목록을 확인하고 있습니다.';
+  try {
+    const data = await api('/api/gemini/models', {method:'POST', headers:{'Content-Type':'application/json'},body:'{}'});
+    $('gemini-models').replaceChildren(...data.models.map(model => new Option(`${model.id} · 입력 ${model.input_limit ?? '?'} / 출력 ${model.output_limit ?? '?'}`, model.id)));
+    $('model-info').textContent = `연결 확인됨 · ${data.models.length}개 모델. 모델 ID 입력란에서 선택하세요. 텍스트·JSON 출력을 지원하는 모델을 사용하세요.`;
+  } catch (exc) { error(exc.message); }
+  finally { setBusy(false); }
+});
 
 function renderCharacters() {
   $('character-profiles').replaceChildren();

@@ -98,14 +98,16 @@ NAME_POLICY = (
 )
 
 
-def generation_schema(base, profiles):
+def generation_schema(base, profiles, reference_contract=True):
     schema = copy.deepcopy(base)
     if profiles:
         character = schema["properties"]["characters"]["items"]
         character["properties"]["profile_id"] = {"type": "string", "enum": [""] + [p["id"] for p in profiles]}
-        for key in ("designation_en", "designation_ko"):
-            character["properties"][key] = {"type": "string"}
-        character["required"] += ["profile_id", "designation_en", "designation_ko"]
+        character["required"].append("profile_id")
+        if reference_contract:
+            for key in ("designation_en", "designation_ko"):
+                character["properties"][key] = {"type": "string"}
+            character["required"] += ["designation_en", "designation_ko"]
     return schema
 
 
